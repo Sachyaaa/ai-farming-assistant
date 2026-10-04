@@ -1,5 +1,14 @@
 spring:
   application.name: ai-farming-assistant
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ai_farming_assistant
+    username: sachin_ai
+    password: ${DB_PASSWORD}
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
 
 gemini:
   api-key: ${GEMINI_API_KEY}
