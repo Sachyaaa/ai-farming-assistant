@@ -417,4 +417,4 @@ Build a portfolio-quality AI application that demonstrates practical understandi
 - AWS
 - Production-oriented AI application architecture
 
-The objective is not just to build a chatbot, but to understand and implement the core components used in modern AI-powered applications.
+The objective is not just to build a chatbot, but to understand and implement the core components used in modern AI-powered applications
