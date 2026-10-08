@@ -58,7 +58,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(
                                 "/api/auth/register",
-                                "/api/auth/login"
+                                "/api/auth/login",
+                                "/api/documents/test-chunk",
+                                "/api/documents/test-embedding",
+                                "/api/documents/test-ingestion"
                         ).permitAll()
                         .requestMatchers(
                                 org.springframework.http.HttpMethod.OPTIONS,
