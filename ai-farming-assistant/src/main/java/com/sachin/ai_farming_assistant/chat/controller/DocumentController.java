@@ -1,10 +1,12 @@
 package com.sachin.ai_farming_assistant.chat.controller;
 
 import com.sachin.ai_farming_assistant.chat.dto.DocumentChunkData;
+import com.sachin.ai_farming_assistant.chat.dto.RetrievedChunk;
 import com.sachin.ai_farming_assistant.chat.entity.Document;
 import com.sachin.ai_farming_assistant.chat.service.DocumentIngestionService;
 import com.sachin.ai_farming_assistant.chat.service.DocumentProcessingService;
 import com.sachin.ai_farming_assistant.chat.service.EmbeddingService;
+import com.sachin.ai_farming_assistant.chat.service.RetrievalService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -20,14 +22,18 @@ public class DocumentController {
 
     private final DocumentIngestionService documentIngestionService;
 
+    private final RetrievalService retrievalService;
+
     public DocumentController(
             DocumentProcessingService documentProcessingService,
             EmbeddingService embeddingService,
-            DocumentIngestionService documentIngestionService
+            DocumentIngestionService documentIngestionService,
+            RetrievalService retrievalService
     ) {
         this.documentProcessingService = documentProcessingService;
         this.embeddingService = embeddingService;
         this.documentIngestionService = documentIngestionService;
+        this.retrievalService = retrievalService;
     }
 
     @PostMapping("/test-chunk")
@@ -69,5 +75,13 @@ public class DocumentController {
                 "documentId", document.getId(),
                 "message", "Document ingested successfully"
         );
+    }
+
+    @PostMapping("/test-retrieval")
+    public List<RetrievedChunk> testRetrieval(
+            @RequestBody String question,
+            @RequestParam(defaultValue = "3") int topK
+    ) {
+        return retrievalService.retrieve(question, topK);
     }
 }
