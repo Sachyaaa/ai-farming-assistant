@@ -1,12 +1,11 @@
 package com.sachin.ai_farming_assistant.chat.controller;
 
 import com.sachin.ai_farming_assistant.chat.dto.DocumentChunkData;
+import com.sachin.ai_farming_assistant.chat.dto.RagResponse;
 import com.sachin.ai_farming_assistant.chat.dto.RetrievedChunk;
 import com.sachin.ai_farming_assistant.chat.entity.Document;
-import com.sachin.ai_farming_assistant.chat.service.DocumentIngestionService;
-import com.sachin.ai_farming_assistant.chat.service.DocumentProcessingService;
-import com.sachin.ai_farming_assistant.chat.service.EmbeddingService;
-import com.sachin.ai_farming_assistant.chat.service.RetrievalService;
+import com.sachin.ai_farming_assistant.chat.service.*;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,23 +16,23 @@ import java.util.Map;
 public class DocumentController {
 
     private final DocumentProcessingService documentProcessingService;
-
     private final EmbeddingService embeddingService;
-
     private final DocumentIngestionService documentIngestionService;
-
     private final RetrievalService retrievalService;
+    private final RagService ragService;
 
     public DocumentController(
             DocumentProcessingService documentProcessingService,
             EmbeddingService embeddingService,
             DocumentIngestionService documentIngestionService,
-            RetrievalService retrievalService
+            RetrievalService retrievalService,
+            RagService ragService
     ) {
         this.documentProcessingService = documentProcessingService;
         this.embeddingService = embeddingService;
         this.documentIngestionService = documentIngestionService;
         this.retrievalService = retrievalService;
+        this.ragService = ragService;
     }
 
     @PostMapping("/test-chunk")
@@ -83,5 +82,15 @@ public class DocumentController {
             @RequestParam(defaultValue = "3") int topK
     ) {
         return retrievalService.retrieve(question, topK);
+    }
+
+    @PostMapping(
+            value = "/test-rag",
+            consumes = MediaType.TEXT_PLAIN_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public RagResponse testRag(@RequestBody String question) {
+
+        return ragService.answer(question);
     }
 }

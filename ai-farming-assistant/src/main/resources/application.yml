@@ -1,9 +1,29 @@
+#spring:
+#  application:
+#    name: ai-farming-assistant
+#
+#  datasource:
+#    url: "jdbc:postgresql://${DB_HOST}:${DB_PORT:5432}/${DB_NAME}?sslmode=verify-full&sslrootcert=${DB_SSL_ROOT_CERT}"
+#    username: ${DB_USERNAME}
+#    password: ${DB_PASSWORD}
+#    hikari:
+#      connection-timeout: 10000
+#
+#  jpa:
+#    hibernate:
+#      ddl-auto: update
+#    show-sql: true
+#    properties:
+#      hibernate:
+#        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+
 spring:
   application.name: ai-farming-assistant
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_farming_assistant
     username: sachin_ai
-    password: ${DB_PASSWORD}
+    password: ${DB_PASSWORD_LOCAL}
 
   jpa:
     hibernate:
