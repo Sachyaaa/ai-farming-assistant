@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Console logging: keep logs visible in IntelliJ -->
+    <appender name="CONSOLE"
+              class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- CloudWatch logging -->
+    <appender name="CLOUDWATCH"
+              class="com.sachin.ai_farming_assistant.logging.CloudWatchLogbackAppender"/>
+
+    <!-- Root logger sends logs to both destinations -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="CLOUDWATCH"/>
+    </root>
+
+</configuration>

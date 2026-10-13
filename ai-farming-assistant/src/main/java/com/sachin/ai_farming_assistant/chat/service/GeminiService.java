@@ -1,6 +1,7 @@
 package com.sachin.ai_farming_assistant.chat.service;
 
 import com.sachin.ai_farming_assistant.chat.dto.CropQuery;
+import com.sachin.ai_farming_assistant.chat.dto.FarmDetails;
 import com.sachin.ai_farming_assistant.chat.entity.Message;
 import com.sachin.ai_farming_assistant.chat.entity.MessageRole;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,6 +12,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import com.sachin.ai_farming_assistant.config.FarmToolConfig;
 
 import java.io.*;
 import java.net.URI;
@@ -28,6 +30,8 @@ public class GeminiService {
     private final ObjectMapper objectMapper;
     private final MessageService messageService;
     private final ConversationService conversationService;
+    private final FarmToolConfig farmToolConfig;
+    private final FarmDetailsService farmDetailsService;
 
     @Value("${gemini.api-key}")
     private String apiKey;
@@ -68,12 +72,16 @@ public class GeminiService {
     public GeminiService(
             ObjectMapper objectMapper,
             MessageService messageService,
-            ConversationService conversationService
+            ConversationService conversationService,
+            FarmToolConfig farmToolConfig,
+            FarmDetailsService farmDetailsService
     ) {
         this.restClient = RestClient.builder().build();
         this.objectMapper = objectMapper;
         this.messageService = messageService;
         this.conversationService = conversationService;
+        this.farmToolConfig = farmToolConfig;
+        this.farmDetailsService = farmDetailsService;
     }
 
     /*
@@ -372,6 +380,315 @@ public class GeminiService {
                     e
             );
         }
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * GEMINI TOOL CALLING — REQUEST FARM DETAILS
+     * ---------------------------------------------------------
+     */
+
+    public Map requestFarmToolCall(String question) {
+
+        if (question == null || question.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Question must not be empty"
+            );
+        }
+
+        String systemInstruction = """
+            You are FarmAssist, an AI farming assistant.
+
+            You have access to a tool named getFarmDetails.
+
+            When the user asks about their registered farm,
+            its crop, farm size, soil type, irrigation method,
+            or location, call getFarmDetails.
+
+            Do not invent or assume farm-specific details.
+
+            If the user asks an unrelated question, you may
+            respond without calling this tool.
+            """;
+
+        String url =
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                        + model
+                        + ":generateContent";
+
+        Map<String, Object> requestBody = Map.of(
+                "systemInstruction", Map.of(
+                        "parts", new Object[]{
+                                Map.of(
+                                        "text",
+                                        systemInstruction
+                                )
+                        }
+                ),
+                "contents", new Object[]{
+                        Map.of(
+                                "role", "user",
+                                "parts", new Object[]{
+                                        Map.of(
+                                                "text",
+                                                question
+                                        )
+                                }
+                        )
+                },
+                "tools", new Object[]{
+                        farmToolConfig.getFarmDetailsTool()
+                }
+        );
+
+        Map response = restClient.post()
+                .uri(url)
+                .header("x-goog-api-key", apiKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(requestBody)
+                .retrieve()
+                .body(Map.class);
+
+        if (response == null) {
+            throw new IllegalStateException(
+                    "Gemini returned an empty response"
+            );
+        }
+
+        return response;
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * EXECUTE REQUESTED FARM TOOL
+     * ---------------------------------------------------------
+     */
+
+    public Map<String, Object> executeFarmToolCall(
+            Map<String, Object> response,
+            Long authenticatedUserId
+    ) {
+
+        if (response == null) {
+            throw new IllegalArgumentException(
+                    "Gemini response must not be null"
+            );
+        }
+
+        JsonNode root = objectMapper.valueToTree(response);
+
+        JsonNode candidates = root.path("candidates");
+
+        if (!candidates.isArray() || candidates.isEmpty()) {
+            throw new IllegalStateException(
+                    "Gemini returned no candidates"
+            );
+        }
+
+        JsonNode parts = candidates.get(0)
+                .path("content")
+                .path("parts");
+
+        if (!parts.isArray()) {
+            throw new IllegalStateException(
+                    "Gemini response contains no parts"
+            );
+        }
+
+        for (JsonNode part : parts) {
+
+            JsonNode functionCall = part.get("functionCall");
+
+            if (functionCall == null || functionCall.isNull()) {
+                continue;
+            }
+
+            String functionName =
+                    functionCall.path("name").asText("");
+
+            JsonNode arguments = functionCall.path("args");
+
+            if (!"getFarmDetails".equals(functionName)) {
+                throw new IllegalArgumentException(
+                        "Unsupported tool: " + functionName
+                );
+            }a
+
+            Long requestedFarmId = null;
+
+            if (arguments.has("farmId")
+                    && !arguments.get("farmId").isNull()) {
+
+                JsonNode farmIdNode = arguments.get("farmId");
+
+                if (!farmIdNode.isIntegralNumber()
+                        || !farmIdNode.canConvertToLong()
+                        || farmIdNode.longValue() <= 0) {
+
+                    throw new IllegalArgumentException(
+                            "farmId must be a positive integer"
+                    );
+                }
+
+                requestedFarmId = farmIdNode.longValue();
+            }
+
+            FarmDetails details = farmDetailsService.getFarmDetails(
+                    authenticatedUserId,
+                    requestedFarmId
+            );
+
+            Map<String, Object> farmData = Map.of(
+                    "farmId", details.farmId(),
+                    "farmName", details.farmName(),
+                    "crop", details.crop(),
+                    "farmSizeAcres", details.farmSizeAcres(),
+                    "soilType", details.soilType() == null
+                            ? "Not specified"
+                            : details.soilType(),
+                    "irrigationMethod",
+                    details.irrigationMethod() == null
+                            ? "Not specified"
+                            : details.irrigationMethod(),
+                    "location", details.location() == null
+                            ? "Not specified"
+                            : details.location()
+            );
+
+            return Map.of(
+                    "name", functionName,
+                    "result", farmData
+            );
+        }
+
+        throw new IllegalStateException(
+                "Gemini did not request a supported function call"
+        );
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * COMPLETE TOOL-CALLING CYCLE
+     * ---------------------------------------------------------
+     */
+
+    public String answerWithFarmTool(
+            String question,
+            Long authenticatedUserId
+    ){
+
+        if (question == null || question.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Question must not be empty"
+            );
+        }
+
+        // Step 1: Ask Gemini whether it needs the farm tool.
+        Map initialResponse = requestFarmToolCall(question);
+
+        JsonNode root = objectMapper.valueToTree(initialResponse);
+        JsonNode candidates = root.path("candidates");
+
+        if (!candidates.isArray() || candidates.isEmpty()) {
+            throw new IllegalStateException(
+                    "Gemini returned no candidates"
+            );
+        }
+
+        JsonNode modelContent = candidates.get(0).path("content");
+        JsonNode parts = modelContent.path("parts");
+
+        JsonNode functionCall = null;
+
+        for (JsonNode part : parts) {
+            if (part.has("functionCall")) {
+                functionCall = part.path("functionCall");
+                break;
+            }
+        }
+
+        // Gemini may answer directly without requesting a tool.
+        if (functionCall == null) {
+            return extractText(initialResponse);
+        }
+
+        // Step 2: Execute the requested function.
+        Map<String, Object> toolExecution = executeFarmToolCall(
+                initialResponse,
+                authenticatedUserId
+        );
+
+        String functionName = (String) toolExecution.get("name");
+
+        Map<String, Object> toolResult =
+                (Map<String, Object>) toolExecution.get("result");
+
+        // Step 3: Build the function response.
+        Map<String, Object> functionResponsePart = Map.of(
+                "functionResponse",
+                Map.of(
+                        "name", functionName,
+                        "response", toolResult
+                )
+        );
+
+        // Preserve Gemini's original function-call message.
+        Map<String, Object> modelMessage =
+                objectMapper.convertValue(
+                        modelContent,
+                        Map.class
+                );
+
+        // Step 4: Send the original question, function call,
+        // and tool result back to Gemini.
+        List<Object> contents = List.of(
+                Map.of(
+                        "role", "user",
+                        "parts", List.of(
+                                Map.of("text", question)
+                        )
+                ),
+                modelMessage,
+                Map.of(
+                        "role", "user",
+                        "parts", List.of(functionResponsePart)
+                )
+        );
+
+        String url =
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                        + model
+                        + ":generateContent";
+
+        Map<String, Object> requestBody = Map.of(
+                "systemInstruction",
+                Map.of(
+                        "parts",
+                        List.of(
+                                Map.of(
+                                        "text",
+                                        """
+                                        You are FarmAssist, an AI farming assistant.
+                                        Answer using the supplied tool result.
+                                        Do not invent farm-specific information.
+                                        If information is missing, acknowledge it.
+                                        """
+                                )
+                        )
+                ),
+                "contents", contents
+        );
+
+        // Step 5: Ask Gemini to generate the final answer.
+        Map finalResponse = restClient.post()
+                .uri(url)
+                .header("x-goog-api-key", apiKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(requestBody)
+                .retrieve()
+                .body(Map.class);
+
+        return extractText(finalResponse);
     }
 
     /*

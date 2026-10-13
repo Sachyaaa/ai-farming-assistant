@@ -6,6 +6,8 @@ import com.sachin.ai_farming_assistant.chat.dto.RetrievedChunk;
 import com.sachin.ai_farming_assistant.chat.entity.Document;
 import com.sachin.ai_farming_assistant.chat.service.*;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -20,19 +22,24 @@ public class DocumentController {
     private final DocumentIngestionService documentIngestionService;
     private final RetrievalService retrievalService;
     private final RagService ragService;
+    private final GeminiService geminiService;
+    private final CurrentUserService currentUserService;
 
     public DocumentController(
             DocumentProcessingService documentProcessingService,
             EmbeddingService embeddingService,
             DocumentIngestionService documentIngestionService,
             RetrievalService retrievalService,
-            RagService ragService
+            RagService ragService, GeminiService geminiService,
+            CurrentUserService currentUserService
     ) {
         this.documentProcessingService = documentProcessingService;
         this.embeddingService = embeddingService;
         this.documentIngestionService = documentIngestionService;
         this.retrievalService = retrievalService;
         this.ragService = ragService;
+        this.geminiService = geminiService;
+        this.currentUserService = currentUserService;
     }
 
     @PostMapping("/test-chunk")
@@ -92,5 +99,40 @@ public class DocumentController {
     public RagResponse testRag(@RequestBody String question) {
 
         return ragService.answer(question);
+    }
+
+    @PostMapping(
+            value = "/test-tool",
+            consumes = MediaType.TEXT_PLAIN_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public Map<String, String> testTool(
+            @RequestBody String question,
+            Authentication authentication
+    ) {
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication.getPrincipal()
+                instanceof String
+                && "anonymousUser".equals(
+                authentication.getPrincipal()
+        )) {
+
+            throw new AccessDeniedException(
+                    "Authentication is required"
+            );
+        }
+
+        Long authenticatedUserId =
+                currentUserService.getAuthenticatedUserId(
+                        authentication
+                );
+
+        String answer = geminiService.answerWithFarmTool(
+                question,
+                authenticatedUserId
+        );
+
+        return Map.of("answer", answer);
     }
 }
