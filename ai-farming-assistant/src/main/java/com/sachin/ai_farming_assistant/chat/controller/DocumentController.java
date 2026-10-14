@@ -10,6 +10,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -106,7 +107,7 @@ public class DocumentController {
             consumes = MediaType.TEXT_PLAIN_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    public Map<String, String> testTool(
+    public Map<String, Object> testTool(
             @RequestBody String question,
             Authentication authentication
     ) {
@@ -133,6 +134,9 @@ public class DocumentController {
                 authenticatedUserId
         );
 
-        return Map.of("answer", answer);
+        Map<String, Object> result = new HashMap<>();
+        result.put("question", question);
+        result.put("response", answer);
+        return result;
     }
 }

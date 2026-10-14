@@ -2,6 +2,7 @@ package com.sachin.ai_farming_assistant.chat.service;
 
 import com.sachin.ai_farming_assistant.chat.dto.CropQuery;
 import com.sachin.ai_farming_assistant.chat.dto.FarmDetails;
+import com.sachin.ai_farming_assistant.chat.entity.FarmTask;
 import com.sachin.ai_farming_assistant.chat.entity.Message;
 import com.sachin.ai_farming_assistant.chat.entity.MessageRole;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,6 +21,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 
@@ -32,6 +35,7 @@ public class GeminiService {
     private final ConversationService conversationService;
     private final FarmToolConfig farmToolConfig;
     private final FarmDetailsService farmDetailsService;
+    private final FarmTaskService farmTaskService;
 
     @Value("${gemini.api-key}")
     private String apiKey;
@@ -74,7 +78,8 @@ public class GeminiService {
             MessageService messageService,
             ConversationService conversationService,
             FarmToolConfig farmToolConfig,
-            FarmDetailsService farmDetailsService
+            FarmDetailsService farmDetailsService,
+            FarmTaskService farmTaskService
     ) {
         this.restClient = RestClient.builder().build();
         this.objectMapper = objectMapper;
@@ -82,6 +87,7 @@ public class GeminiService {
         this.conversationService = conversationService;
         this.farmToolConfig = farmToolConfig;
         this.farmDetailsService = farmDetailsService;
+        this.farmTaskService = farmTaskService;
     }
 
     /*
@@ -388,74 +394,99 @@ public class GeminiService {
      * ---------------------------------------------------------
      */
 
-    public Map requestFarmToolCall(String question) {
+    public Map<String, Object> requestFarmToolCall(String question) {
 
         if (question == null || question.isBlank()) {
             throw new IllegalArgumentException(
-                    "Question must not be empty"
+                    "Question cannot be empty"
             );
         }
 
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Kolkata"));
+
         String systemInstruction = """
-            You are FarmAssist, an AI farming assistant.
+        You are FarmAssist, an AI farming assistant.
 
-            You have access to a tool named getFarmDetails.
+        Today's date in the Asia/Kolkata timezone is %s.
 
-            When the user asks about their registered farm,
-            its crop, farm size, soil type, irrigation method,
-            or location, call getFarmDetails.
+        You have access to the following tools:
+        1. getFarmDetails: Retrieves farm details for the
+           currently authenticated user.
+        2. createFarmTask: Creates a farm task for the
+           currently authenticated user.
 
-            Do not invent or assume farm-specific details.
+        Tool usage rules:
+        - Use getFarmDetails when the user asks about their
+          registered farm details or when farm information is
+          genuinely needed to answer the question.
+        - Use createFarmTask only when the user explicitly
+          requests creating a farm task.
+        - For an explicit task-creation request, call
+          createFarmTask directly. Do not call getFarmDetails first
+          unless the user specifically requests farm details.
+        - Do not create tasks when the user is only asking
+          for advice, suggestions, or recommendations.
+        - Never invent farm IDs, farm details, or task data.
+        - If the user does not specify a due date, omit dueDate.
+        - If the user does not specify a priority, use MEDIUM.
+        - If essential information is missing, ask a clarifying
+          question rather than inventing information.
+        - After a tool executes successfully, explain the result
+          using the actual tool response.
+        - A newly created task is PENDING_APPROVAL.
+          Never claim that the task has been approved.
+        - Do not claim an action succeeded unless the tool
+          result confirms success.
 
-            If the user asks an unrelated question, you may
-            respond without calling this tool.
-            """;
-
-        String url =
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                        + model
-                        + ":generateContent";
+        DATE RULES:
+        - Interpret relative dates such as "tomorrow" using
+          today's date stated above.
+        - Return dueDate in YYYY-MM-DD format.
+        - Never return a date earlier than today.
+        - If the due date is not specified, omit dueDate.
+        """.formatted(today);
 
         Map<String, Object> requestBody = Map.of(
-                "systemInstruction", Map.of(
-                        "parts", new Object[]{
+                "systemInstruction",
+                Map.of(
+                        "parts",
+                        List.of(
                                 Map.of(
                                         "text",
                                         systemInstruction
                                 )
-                        }
+                        )
                 ),
-                "contents", new Object[]{
+
+                "contents",
+                List.of(
                         Map.of(
                                 "role", "user",
-                                "parts", new Object[]{
+                                "parts",
+                                List.of(
                                         Map.of(
-                                                "text",
-                                                question
+                                                "text", question
                                         )
-                                }
+                                )
                         )
-                },
-                "tools", new Object[]{
-                        farmToolConfig.getFarmDetailsTool()
-                }
+                ),
+
+                "tools",
+                List.of(
+                        farmToolConfig.getAllTools()
+                )
         );
 
-        Map response = restClient.post()
-                .uri(url)
-                .header("x-goog-api-key", apiKey)
+        return restClient.post()
+                .uri(
+                        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                        model
+                )
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("x-goog-api-key", apiKey)
                 .body(requestBody)
                 .retrieve()
                 .body(Map.class);
-
-        if (response == null) {
-            throw new IllegalStateException(
-                    "Gemini returned an empty response"
-            );
-        }
-
-        return response;
     }
 
     /*
@@ -468,104 +499,216 @@ public class GeminiService {
             Map<String, Object> response,
             Long authenticatedUserId
     ) {
-
-        if (response == null) {
+        if (authenticatedUserId == null || authenticatedUserId <= 0) {
             throw new IllegalArgumentException(
-                    "Gemini response must not be null"
+                    "Authenticated user is required"
             );
         }
 
+        // Read Gemini's response.
         JsonNode root = objectMapper.valueToTree(response);
-
         JsonNode candidates = root.path("candidates");
 
         if (!candidates.isArray() || candidates.isEmpty()) {
-            throw new IllegalStateException(
+            throw new IllegalArgumentException(
                     "Gemini returned no candidates"
             );
         }
 
-        JsonNode parts = candidates.get(0)
+        JsonNode parts = candidates
+                .get(0)
                 .path("content")
                 .path("parts");
 
         if (!parts.isArray()) {
-            throw new IllegalStateException(
+            throw new IllegalArgumentException(
                     "Gemini response contains no parts"
             );
         }
 
+        JsonNode functionCall = null;
+
         for (JsonNode part : parts) {
-
-            JsonNode functionCall = part.get("functionCall");
-
-            if (functionCall == null || functionCall.isNull()) {
-                continue;
+            if (part.has("functionCall")) {
+                functionCall = part.get("functionCall");
+                break;
             }
+        }
 
-            String functionName =
-                    functionCall.path("name").asText("");
-
-            JsonNode arguments = functionCall.path("args");
-
-            if (!"getFarmDetails".equals(functionName)) {
-                throw new IllegalArgumentException(
-                        "Unsupported tool: " + functionName
-                );
-            }a
-
-            Long requestedFarmId = null;
-
-            if (arguments.has("farmId")
-                    && !arguments.get("farmId").isNull()) {
-
-                JsonNode farmIdNode = arguments.get("farmId");
-
-                if (!farmIdNode.isIntegralNumber()
-                        || !farmIdNode.canConvertToLong()
-                        || farmIdNode.longValue() <= 0) {
-
-                    throw new IllegalArgumentException(
-                            "farmId must be a positive integer"
-                    );
-                }
-
-                requestedFarmId = farmIdNode.longValue();
-            }
-
-            FarmDetails details = farmDetailsService.getFarmDetails(
-                    authenticatedUserId,
-                    requestedFarmId
-            );
-
-            Map<String, Object> farmData = Map.of(
-                    "farmId", details.farmId(),
-                    "farmName", details.farmName(),
-                    "crop", details.crop(),
-                    "farmSizeAcres", details.farmSizeAcres(),
-                    "soilType", details.soilType() == null
-                            ? "Not specified"
-                            : details.soilType(),
-                    "irrigationMethod",
-                    details.irrigationMethod() == null
-                            ? "Not specified"
-                            : details.irrigationMethod(),
-                    "location", details.location() == null
-                            ? "Not specified"
-                            : details.location()
-            );
-
-            return Map.of(
-                    "name", functionName,
-                    "result", farmData
+        if (functionCall == null) {
+            throw new IllegalArgumentException(
+                    "Gemini did not request a tool call"
             );
         }
 
-        throw new IllegalStateException(
-                "Gemini did not request a supported function call"
-        );
-    }
+        String functionName = functionCall
+                .path("name")
+                .asString("");
 
+        JsonNode args = functionCall.path("args");
+
+        if (!args.isObject()) {
+            throw new IllegalArgumentException(
+                    "Tool arguments must be a JSON object"
+            );
+        }
+
+        // Dispatch only explicitly supported tools.
+        switch (functionName) {
+
+            case "getFarmDetails" -> {
+                Long requestedFarmId = null;
+
+                if (args.hasNonNull("farmId")) {
+                    JsonNode farmIdNode = args.get("farmId");
+
+                    if (!farmIdNode.isIntegralNumber()
+                            || !farmIdNode.canConvertToLong()
+                            || farmIdNode.longValue() <= 0) {
+                        throw new IllegalArgumentException(
+                                "farmId must be a positive integer"
+                        );
+                    }
+
+                    requestedFarmId = farmIdNode.longValue();
+                }
+
+                FarmDetails details =
+                        farmDetailsService.getFarmDetails(
+                                authenticatedUserId,
+                                requestedFarmId
+                        );
+
+                Map<String, Object> result = Map.of(
+                        "farmId", details.farmId(),
+                        "farmName", details.farmName(),
+                        "crop", details.crop(),
+                        "farmSizeAcres", details.farmSizeAcres(),
+                        "soilType", details.soilType() == null
+                                ? "Not specified"
+                                : details.soilType(),
+                        "irrigationMethod",
+                        details.irrigationMethod() == null
+                                ? "Not specified"
+                                : details.irrigationMethod(),
+                        "location", details.location() == null
+                                ? "Not specified"
+                                : details.location()
+                );
+
+                return Map.of(
+                        "name", functionName,
+                        "result", result
+                );
+            }
+
+            case "createFarmTask" -> {
+
+                if (!args.isObject()) {
+                    throw new IllegalArgumentException(
+                            "Tool arguments must be a JSON object"
+                    );
+                }
+
+                // Validate title's presence and JSON type.
+                if (!args.hasNonNull("title")
+                        || !args.get("title").isTextual()) {
+                    throw new IllegalArgumentException(
+                            "Task title must be a string"
+                    );
+                }
+
+                String title = args.get("title").textValue();
+
+                // Read optional description.
+                String description = null;
+
+                if (args.hasNonNull("description")) {
+                    if (!args.get("description").isTextual()) {
+                        throw new IllegalArgumentException(
+                                "Description must be a string"
+                        );
+                    }
+
+                    description = args.get("description").textValue();
+                }
+
+                // Read optional due date.
+                String dueDate = null;
+
+                if (args.hasNonNull("dueDate")) {
+                    if (!args.get("dueDate").isTextual()) {
+                        throw new IllegalArgumentException(
+                                "Due date must be a string"
+                        );
+                    }
+
+                    dueDate = args.get("dueDate").textValue();
+                    System.out.println("Gemini dueDate: " + dueDate);
+                }
+
+                // Read optional priority.
+                String priority = null;
+
+                if (args.hasNonNull("priority")) {
+                    if (!args.get("priority").isTextual()) {
+                        throw new IllegalArgumentException(
+                                "Priority must be a string"
+                        );
+                    }
+
+                    priority = args.get("priority").textValue();
+                }
+
+                // Read optional farm ID.
+                Long requestedFarmId = null;
+
+                if (args.hasNonNull("farmId")) {
+                    JsonNode farmIdNode = args.get("farmId");
+
+                    if (!farmIdNode.isIntegralNumber()
+                            || !farmIdNode.canConvertToLong()) {
+                        throw new IllegalArgumentException(
+                                "farmId must be an integer"
+                        );
+                    }
+
+                    requestedFarmId = farmIdNode.longValue();
+                }
+
+                // Delegate business validation and authorization
+                // to FarmTaskService.
+                FarmTask task = farmTaskService.createFarmTask(
+                        authenticatedUserId,
+                        requestedFarmId,
+                        title,
+                        description,
+                        dueDate,
+                        priority
+                );
+
+                Map<String, Object> result = Map.of(
+                        "success", true,
+                        "taskId", task.getId(),
+                        "farmId", task.getFarmId(),
+                        "title", task.getTitle(),
+                        "priority", task.getPriority().name(),
+                        "status", task.getStatus().name(),
+                        "message",
+                        "Task created and is awaiting user approval"
+                );
+
+                return Map.of(
+                        "name", functionName,
+                        "result", result
+                );
+            }
+
+            default -> throw new IllegalArgumentException(
+                    "Unsupported tool: " + functionName
+            );
+        }
+    }
     /*
      * ---------------------------------------------------------
      * COMPLETE TOOL-CALLING CYCLE
@@ -585,6 +728,8 @@ public class GeminiService {
 
         // Step 1: Ask Gemini whether it needs the farm tool.
         Map initialResponse = requestFarmToolCall(question);
+
+        System.out.println("Gemini initial response: " + initialResponse);
 
         JsonNode root = objectMapper.valueToTree(initialResponse);
         JsonNode candidates = root.path("candidates");
@@ -669,14 +814,22 @@ public class GeminiService {
                                         "text",
                                         """
                                         You are FarmAssist, an AI farming assistant.
-                                        Answer using the supplied tool result.
+        
+                                        The application has already executed the requested tool.
+                                        Use the supplied tool result to answer the user.
+                                        Do not call any function again.
+                                        Return a concise, helpful final text response.
                                         Do not invent farm-specific information.
                                         If information is missing, acknowledge it.
                                         """
                                 )
                         )
                 ),
-                "contents", contents
+                "contents", contents,
+                "toolConfig", Map.of(
+                        "functionCallingConfig",
+                        Map.of("mode", "NONE")
+                )
         );
 
         // Step 5: Ask Gemini to generate the final answer.
@@ -688,7 +841,31 @@ public class GeminiService {
                 .retrieve()
                 .body(Map.class);
 
-        return extractText(finalResponse);
+        System.out.println("Gemini final response: " + finalResponse);
+
+        JsonNode finalRoot = objectMapper.valueToTree(finalResponse);
+        JsonNode finalCandidates = finalRoot.path("candidates");
+
+        if (!finalCandidates.isArray() || finalCandidates.isEmpty()) {
+            throw new IllegalStateException(
+                    "Gemini returned no candidates after tool execution"
+            );
+        }
+
+        JsonNode finalParts = finalCandidates
+                .get(0)
+                .path("content")
+                .path("parts");
+
+        for (JsonNode part : finalParts) {
+            if (part.has("text") && !part.path("text").asString("").isBlank()) {
+                return part.path("text").asString();
+            }
+        }
+
+        throw new IllegalStateException(
+                "Gemini did not return a final text answer after tool execution"
+        );
     }
 
     /*
